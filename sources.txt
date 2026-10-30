@@ -1,3 +1,6 @@
 # GitHub Raw subscription
-
 https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/refs/heads/main/protocols/hysteria2.txt
+https://raw.githubusercontent.com/Argh94/V2RayAutoConfig/refs/heads/main/configs/Hysteria2.txt
+https://raw.githubusercontent.com/hamedp-71/v2go_NEW/refs/heads/main/Splitted-By-Protocol/hy2.txt
+https://raw.githubusercontent.com/farhad1200/Brook/main/1
+  
