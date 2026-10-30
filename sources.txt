@@ -1,2 +1,25 @@
 # GitHub Raw subscription
 https://raw.githubusercontent.com/farhad1200/Brook/main/1
+https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/refs/heads/main/protocols/hysteria2.txt
+https://raw.githubusercontent.com/Argh94/V2RayAutoConfig/refs/heads/main/configs/Hysteria2.txt
+https://raw.githubusercontent.com/hamedp-71/v2go_NEW/refs/heads/main/Splitted-By-Protocol/hy2.txt
+https://raw.githubusercontent.com/LeilaoMi/AutoMergePublicNodes-Optimized/refs/heads/main/output/by_protocol/verified_hysteria2.txt
+https://raw.githubusercontent.com/ShatakVPN/ConfigForge-V2Ray/refs/heads/main/configs/hysteria2.txt
+https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/filtered/subs/hysteria2.txt
+https://raw.githubusercontent.com/alireza786786/Free-V2ray-Configs/refs/heads/main/servers/hysteria2_servers.txt
+https://raw.githubusercontent.com/acymz/AutoVPN/refs/heads/main/data/V2.txt
+https://raw.githubusercontent.com/FLAT447/v2ray-lists/refs/heads/main/BLACK_FULL.txt
+https://raw.githubusercontent.com/FLAT447/v2ray-lists/refs/heads/main/WHITE_FULL.txt
+https://raw.githubusercontent.com/10ium/VpnClashFaCollector/main/sub/all/hysteria2.txt
+https://raw.githubusercontent.com/sakha1370/OpenRay/refs/heads/main/output/kind/hysteria2.txt
+https://github.com/R3ZARAHIMI/tg-v2ray-configs-every2h/blob/main/Original-Configs.txt
+https://raw.githubusercontent.com/galaxy-vpn-2023/vpn/refs/heads/main/output/Bests.txt
+https://raw.githubusercontent.com/mahdireignswwe/mahdi-reigns/refs/heads/main/v2ray.Mahdi.Roman.Reigns.plus.txt
+https://raw.githubusercontent.com/morpheusadam/v2ray-config/refs/heads/main/subs/bundles/hysteria2.txt
+https://raw.githubusercontent.com/rusingineer/NSP/refs/heads/main/clean/hysteria2.txt
+https://raw.githubusercontent.com/rusingineer/NSP/refs/heads/main/clean/hy2.txt
+https://raw.githubusercontent.com/rtwo2/FastNodes/refs/heads/main/sub/protocols/hysteria2.txt
+https://raw.githubusercontent.com/rtwo2/FastNodes/refs/heads/main/sub/protocols/hysteria2_part2.txt
+https://raw.githubusercontent.com/rtwo2/FastNodes/refs/heads/main/sub/protocols/hysteria2_part3.txt
+https://raw.githubusercontent.com/rtwo2/FastNodes/refs/heads/main/sub/protocols/hysteria2_part4.txt
+https://raw.githubusercontent.com/rtwo2/FastNodes/refs/heads/main/sub/protocols/hysteria2_part5.txt
