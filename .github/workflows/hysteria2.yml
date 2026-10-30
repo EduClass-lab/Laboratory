@@ -4,8 +4,8 @@ name: Hysteria2 Collector and Speed Tester
 on:
   workflow_dispatch:
 
- # schedule:
- # - cron: "0 */6 * * *"
+  schedule:
+  - cron: "0 11 * * *"
 
 permissions:
   contents: write
@@ -22,12 +22,12 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7.0.1
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7.1.0
         with:
-          python-version: "3.12"
+          python-version: "3.x"
 
       - name: Install Dependencies
         run: |
@@ -98,9 +98,13 @@ jobs:
             echo "Valid servers:"
             wc -l < "$OUTPUT_FILE"
 
+          echo "=================================="
+
             echo ""
             echo "First 10 servers:"
             head -n 10 "$OUTPUT_FILE"
+
+          echo "=================================="
 
             echo ""
             echo "Output file:"
@@ -124,7 +128,7 @@ jobs:
           echo "=================================="
 
       - name: Commit Results
-        uses: stefanzweifel/git-auto-commit-action@v6
+        uses: stefanzweifel/git-auto-commit-action@v7.2.1
         with:
-          commit_message: "Update tested Hysteria2 servers - ${{ github.run_id }}"
+          commit_message: "Update tested Hysteria2 servers"
           file_pattern: results/**
