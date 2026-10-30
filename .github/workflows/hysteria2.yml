@@ -80,27 +80,53 @@ jobs:
         run: |
           python scripts/hysteria2_tester.py
 
+      
       - name: Show Results
+        shell: bash
         run: |
+          set -e
+
           echo "=================================="
           echo "Hysteria2 Results"
           echo "=================================="
 
-          if [ -f results/hysteria2.txt ]; then
+          OUTPUT_FILE="results/hysteria2.txt"
+          BACKUP_FILE="results/$(date +'%Y')/$(date +'%m')/$(date +'%d').txt"
+
+          if [ -f "$OUTPUT_FILE" ]; then
+            echo ""
             echo "Valid servers:"
-            wc -l results/hysteria2.txt
+            wc -l < "$OUTPUT_FILE"
 
             echo ""
             echo "First 10 servers:"
-            head -n 10 results/hysteria2.txt
+            head -n 10 "$OUTPUT_FILE"
+
+            echo ""
+            echo "Output file:"
+            echo "$OUTPUT_FILE"
+
+            echo ""
+            echo "Daily backup:"
+            if [ -f "$BACKUP_FILE" ]; then
+              echo "$BACKUP_FILE"
+              echo "Backup lines:"
+              wc -l < "$BACKUP_FILE"
+            else
+              echo "Backup file not found."
+            fi
+
           else
             echo "No result file found."
           fi
 
+          echo ""
+          echo "=================================="
+
       - name: Commit Results
         uses: stefanzweifel/git-auto-commit-action@v6
         with:
-          commit_message: "Update tested Hysteria2 servers - $(date +'%Y-%m-%d')"
+          commit_message: "Update tested Hysteria2 servers - ${{ github.run_id }} - $(date +'%Y-%m-%d')"
           file_pattern: |
             results/hysteria2.txt
             results/**/*.txt
