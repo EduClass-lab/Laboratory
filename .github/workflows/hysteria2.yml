@@ -76,7 +76,7 @@ jobs:
           MAX_WORKERS: "10"
           CONNECT_TIMEOUT: "15"
           DOWNLOAD_TIMEOUT: "35"
-          MIN_SPEED: "10"
+          MIN_SPEED: "16"
         run: |
           python scripts/hysteria2_tester.py
 
