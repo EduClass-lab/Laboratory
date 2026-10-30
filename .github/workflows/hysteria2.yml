@@ -39,31 +39,31 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Fetching latest stable sing-box release..."
+          # echo "Fetching latest stable sing-box release..."
 
-          RELEASE_JSON=$(curl -fsSL \
-            https://api.github.com/repos/SagerNet/sing-box/releases/latest)
+          # RELEASE_JSON=$(curl -fsSL \
+          #   https://api.github.com/repos/SagerNet/sing-box/releases/latest)
 
-          DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '
-            .assets[]
-            | select(.name | test("linux-amd64\\.tar\\.gz$"))
-            | .browser_download_url
-          ' | head -n 1)
+          # DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '
+          #   .assets[]
+          #   | select(.name | test("linux-amd64\\.tar\\.gz$"))
+          #   | .browser_download_url
+          # ' | head -n 1)
 
-          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-            echo "Could not find sing-box Linux AMD64 release."
-            exit 1
-          fi
+          # if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+          #   echo "Could not find sing-box Linux AMD64 release."
+          #   exit 1
+          # fi
 
-          echo "Downloading: $DOWNLOAD_URL"
+          # echo "Downloading: $DOWNLOAD_URL"
 
-          curl -fsSL "$DOWNLOAD_URL" -o sing-box.tar.gz
+          # curl -fsSL "$DOWNLOAD_URL" -o sing-box.tar.gz
 
-          mkdir -p sing-box-extract
+          # mkdir -p sing-box-extract
 
-          tar -xzf sing-box.tar.gz \
-            -C sing-box-extract \
-            --strip-components=1
+          # tar -xzf sing-box.tar.gz \
+          #   -C sing-box-extract \
+          #   --strip-components=1
 
           sudo install \
             sing-box-extract/sing-box \
