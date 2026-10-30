@@ -38,9 +38,9 @@ now = datetime.now()
 BACKUP_FILE = (
     ROOT
     / "results"
-    / NOW.strftime("%Y")
-    / NOW.strftime("%m")
-    / f"{NOW.strftime('%d')}.txt"
+    / now.strftime("%Y")
+    / now.strftime("%m")
+    / f"{now.strftime('%d')}.txt"
 )
 
 SING_BOX = shutil.which("sing-box") or "sing-box"
