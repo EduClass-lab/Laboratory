@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 
 import base64
@@ -14,11 +13,16 @@ import tempfile
 import threading
 import time
 
-from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
-from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime
-now = datetime.now()
+from pathlib import Path
+from urllib.parse import (
+    parse_qs,
+    unquote,
+    urlsplit,
+    urlunsplit,
+)
+from zoneinfo import ZoneInfo
+
 
 # ============================================================
 # Configuration
@@ -28,40 +32,58 @@ ROOT = Path(__file__).resolve().parent.parent
 
 SOURCES_FILE = ROOT / "sources.txt"
 OUTPUT_FILE = ROOT / "results" / "hysteria2.txt"
+
+now = datetime.now()
+
 BACKUP_FILE = (
     ROOT
     / "results"
-    / now.strftime("%Y")
-    / now.strftime("%m")
-    / f"{now.strftime('%d')}.txt"
+    / NOW.strftime("%Y")
+    / NOW.strftime("%m")
+    / f"{NOW.strftime('%d')}.txt"
 )
 
 SING_BOX = shutil.which("sing-box") or "sing-box"
 CURL = shutil.which("curl") or "curl"
 
-DOWNLOAD_URL = (
-    "https://speed.cloudflare.com/__down?bytes=10000000"
-)
-
 CONNECTIVITY_URL = "https://www.cloudflare.com/cdn-cgi/trace"
 
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))
+DOWNLOAD_BYTES = int(
+    os.getenv("DOWNLOAD_BYTES", "10000000")
+)
 
-CONNECT_TIMEOUT = int(os.getenv("CONNECT_TIMEOUT", "15"))
-DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "35"))
+DOWNLOAD_URL = (
+    "https://speed.cloudflare.com/__down"
+    f"?bytes={DOWNLOAD_BYTES}"
+)
 
-MIN_SPEED = float(os.getenv("MIN_SPEED", "0"))
+MAX_WORKERS = max(
+    1,
+    int(os.getenv("MAX_WORKERS", "10")),
+)
 
-# Maximum bytes downloaded during the speed test.
-DOWNLOAD_BYTES = int(os.getenv("DOWNLOAD_BYTES", "10000000"))
+CONNECT_TIMEOUT = max(
+    1,
+    int(os.getenv("CONNECT_TIMEOUT", "15")),
+)
 
-# Maximum time allowed for sing-box to start.
-STARTUP_TIMEOUT = 8
+DOWNLOAD_TIMEOUT = max(
+    1,
+    int(os.getenv("DOWNLOAD_TIMEOUT", "35")),
+)
 
-# Test result format:
-# server URI only, without additional metadata.
+MIN_SPEED = max(
+    0.0,
+    float(os.getenv("MIN_SPEED", "0")),
+)
+
+STARTUP_TIMEOUT = max(
+    1,
+    int(os.getenv("STARTUP_TIMEOUT", "8")),
+)
+
+# Output is URI-only, with speed added to the URI fragment name.
 OUTPUT_FORMAT = "uri"
-
 
 print_lock = threading.Lock()
 
@@ -88,7 +110,8 @@ def load_sources():
     sources = []
 
     for line in SOURCES_FILE.read_text(
-        encoding="utf-8"
+        encoding="utf-8",
+        errors="replace",
     ).splitlines():
 
         line = line.strip()
@@ -96,12 +119,15 @@ def load_sources():
         if not line or line.startswith("#"):
             continue
 
-        if not line.lower().startswith(("http://", "https://")):
+        if not line.lower().startswith(
+            ("http://", "https://")
+        ):
             log(f"[SKIP] Invalid source URL: {line}")
             continue
 
         sources.append(line)
 
+    # Deduplicate source URLs while preserving their order.
     return list(dict.fromkeys(sources))
 
 
@@ -127,20 +153,27 @@ def download_source(url):
         )
 
         if result.returncode != 0:
-            log(f"[SOURCE ERROR] {url}")
+            log(f"[SOURCE ERROR] Failed to download: {url}")
             return ""
 
         log(f"[SOURCE OK] {url}")
 
         return result.stdout.strip()
 
+    except subprocess.TimeoutExpired:
+        log(f"[SOURCE ERROR] Download timed out: {url}")
+        return ""
+
     except Exception as exc:
-        log(f"[SOURCE ERROR] {url}: {exc}")
+        log(
+            f"[SOURCE ERROR] {url}: "
+            f"{type(exc).__name__}: {exc}"
+        )
         return ""
 
 
 # ============================================================
-# Subscription decoding
+# Hysteria2 URI extraction and normalization
 # ============================================================
 
 HY2_PATTERN = re.compile(
@@ -152,50 +185,75 @@ HY2_PATTERN = re.compile(
 def normalize_uri(uri):
     uri = uri.strip()
 
-    # Remove trailing punctuation commonly found in text sources.
+    # Remove trailing punctuation often included in source text.
     uri = uri.rstrip("),.;]}>'\"")
 
+    # Normalize hy2:// to hysteria2://.
     if uri.lower().startswith("hy2://"):
         uri = "hysteria2://" + uri[6:]
 
     return uri
 
 
-def extract_uris(text):
+def extract_uris(text, max_decode_depth=5):
+    """
+    Extract Hysteria2 URIs from direct or Base64-encoded content.
+
+    This supports:
+      - Plain hysteria2:// links
+      - Plain hy2:// links
+      - Base64 subscription content
+      - Mixed direct and encoded content
+    """
+
     if not text:
         return []
 
     found = []
 
-    # First, extract links directly from the content.
+    # First, collect all directly visible URIs.
     for match in HY2_PATTERN.findall(text):
         found.append(normalize_uri(match))
 
-    if found:
-        return found
+    # Avoid infinite recursive decoding.
+    if max_decode_depth <= 0:
+        return list(dict.fromkeys(found))
 
-    # If no links exist, attempt Base64 decoding.
     compact = re.sub(r"\s+", "", text)
 
     if not compact:
-        return []
+        return list(dict.fromkeys(found))
 
+    # Attempt Base64 decoding even if direct URIs were found.
+    # This allows mixed direct + encoded source content.
     try:
         padded = compact + "=" * (
             (-len(compact)) % 4
         )
 
-        decoded = base64.urlsafe_b64decode(
+        decoded_bytes = base64.urlsafe_b64decode(
             padded.encode("ascii")
-        ).decode("utf-8", errors="ignore")
+        )
 
-        if decoded and decoded != text:
-            return extract_uris(decoded)
+        decoded = decoded_bytes.decode(
+            "utf-8",
+            errors="ignore",
+        )
+
+        # Only recurse when decoding produced meaningful new text.
+        if decoded and decoded.strip() != text.strip():
+            decoded_uris = extract_uris(
+                decoded,
+                max_decode_depth=max_decode_depth - 1,
+            )
+
+            found.extend(decoded_uris)
 
     except Exception:
         pass
 
-    return []
+    # Deduplicate while preserving order.
+    return list(dict.fromkeys(found))
 
 
 def collect_servers():
@@ -217,7 +275,6 @@ def collect_servers():
 
         all_servers.extend(servers)
 
-    # Deduplicate while preserving original order.
     unique_servers = list(dict.fromkeys(all_servers))
 
     log(
@@ -243,7 +300,7 @@ def parse_hysteria2_uri(uri):
     if not parsed.hostname:
         raise ValueError("Missing server hostname")
 
-    if not parsed.port:
+    if parsed.port is None:
         raise ValueError("Missing server port")
 
     password = unquote(parsed.username or "")
@@ -276,7 +333,11 @@ def parse_hysteria2_uri(uri):
         "insecure",
         "allowInsecure",
         default="0",
-    ).lower() in ("1", "true", "yes")
+    ).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
     alpn = get_param("alpn")
 
@@ -362,8 +423,48 @@ def create_singbox_config(outbound, port):
     }
 
 
+def validate_singbox_config(config_file):
+    """
+    Validate the generated config before starting sing-box.
+    """
+
+    try:
+        result = subprocess.run(
+            [
+                SING_BOX,
+                "check",
+                "-c",
+                str(config_file),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if result.returncode == 0:
+            return True
+
+        error = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or "Unknown sing-box config error"
+        )
+
+        log(f"[CONFIG ERROR] {error}")
+
+        return False
+
+    except Exception as exc:
+        log(
+            f"[CONFIG ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return False
+
+
 # ============================================================
-# Proxy testing
+# Proxy startup
 # ============================================================
 
 def wait_for_proxy(port, process):
@@ -386,6 +487,10 @@ def wait_for_proxy(port, process):
 
     return False
 
+
+# ============================================================
+# Curl testing
+# ============================================================
 
 def curl_test(port, url, timeout):
     proxy = f"socks5h://127.0.0.1:{port}"
@@ -424,16 +529,23 @@ def curl_test(port, url, timeout):
             return None
 
         status_code = int(parts[0])
-        speed = float(parts[1])
+        speed_bytes_per_second = float(parts[1])
 
         if status_code < 200 or status_code >= 400:
             return None
 
-        return speed
+        return speed_bytes_per_second
+
+    except subprocess.TimeoutExpired:
+        return None
 
     except Exception:
         return None
 
+
+# ============================================================
+# Test one Hysteria2 server
+# ============================================================
 
 def test_server(uri):
     process = None
@@ -465,6 +577,10 @@ def test_server(uri):
                 encoding="utf-8",
             )
 
+            # Validate config before launching sing-box.
+            if not validate_singbox_config(config_file):
+                return None
+
             process = subprocess.Popen(
                 [
                     SING_BOX,
@@ -479,7 +595,7 @@ def test_server(uri):
             if not wait_for_proxy(port, process):
                 return None
 
-            # First check that the proxy can reach the internet.
+            # First check internet connectivity.
             connectivity = curl_test(
                 port,
                 CONNECTIVITY_URL,
@@ -490,17 +606,19 @@ def test_server(uri):
                 return None
 
             # Then measure download speed.
-            speed = curl_test(
+            speed_bytes_per_second = curl_test(
                 port,
                 DOWNLOAD_URL,
                 DOWNLOAD_TIMEOUT,
             )
 
-            if speed is None:
+            if speed_bytes_per_second is None:
                 return None
 
-            # curl reports bytes per second.
-            speed_mbps = speed * 8 / 1_000_000
+            # Convert bytes/sec to megabits/sec.
+            speed_mbps = (
+                speed_bytes_per_second * 8 / 1_000_000
+            )
 
             if speed_mbps < MIN_SPEED:
                 return None
@@ -513,7 +631,7 @@ def test_server(uri):
     except Exception as exc:
         log(
             f"[ERROR] Server test failed: "
-            f"{type(exc).__name__}"
+            f"{type(exc).__name__}: {exc}"
         )
 
         return None
@@ -521,7 +639,8 @@ def test_server(uri):
     finally:
         if process is not None:
 
-            process.terminate()
+            if process.poll() is None:
+                process.terminate()
 
             try:
                 process.wait(timeout=3)
@@ -532,7 +651,7 @@ def test_server(uri):
 
 
 # ============================================================
-# Test and sort
+# Test and sort servers
 # ============================================================
 
 def test_servers(servers):
@@ -562,7 +681,15 @@ def test_servers(servers):
 
             completed += 1
 
-            result = future.result()
+            try:
+                result = future.result()
+
+            except Exception as exc:
+                log(
+                    f"[ERROR] Worker failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                result = None
 
             if result is not None:
                 valid_servers.append(result)
@@ -588,16 +715,24 @@ def test_servers(servers):
     return valid_servers
 
 
+# ============================================================
+# Format URI name with speed
+# ============================================================
+
 def format_server_uri(uri, speed_mbps):
     """
-    Add measured download speed in MB/s after the country flag
-    in the server name.
+    Add measured speed in MB/s after the country flag.
 
     Example:
         🇩🇪 Germany
         ->
         🇩🇪 10.65 MB/s Germany
+
+    Existing speed labels are removed first, so reruns
+    do not add duplicate labels.
     """
+
+    uri = normalize_uri(uri)
 
     parts = urlsplit(uri)
 
@@ -606,24 +741,30 @@ def format_server_uri(uri, speed_mbps):
 
     speed_label = f"{speed_mb:.2f} MB/s"
 
-    name = unquote(parts.fragment)
+    name = unquote(parts.fragment).strip()
 
-    # Remove previously added speed labels to prevent duplication.
+    # Remove old MB/s labels anywhere in the name.
     name = re.sub(
-        r"\s*\|\s*\d+(?:\.\d+)?\s*MB/s",
+        r"\s*\d+(?:\.\d+)?\s*MB/s",
         "",
         name,
         flags=re.IGNORECASE,
     )
 
+    # Clean up duplicate spaces and separators.
     name = re.sub(
-        r"^\s*\d+(?:\.\d+)?\s*MB/s\s*",
-        "",
+        r"\s*\|\s*\|?\s*",
+        " ",
         name,
-        flags=re.IGNORECASE,
     )
 
-    # Insert speed immediately after the country flag.
+    name = re.sub(
+        r"\s{2,}",
+        " ",
+        name,
+    ).strip()
+
+    # Match a two-character country flag at the beginning.
     flag_pattern = re.compile(
         r"^(\s*[\U0001F1E6-\U0001F1FF]{2})"
     )
@@ -644,7 +785,7 @@ def format_server_uri(uri, speed_mbps):
         )
 
     else:
-        # If no country flag exists, prepend the speed.
+        # If no country flag exists, put speed at the beginning.
         name = f"{speed_label} {name}".strip()
 
     return urlunsplit(
@@ -656,7 +797,8 @@ def format_server_uri(uri, speed_mbps):
             name,
         )
     )
-    
+
+
 # ============================================================
 # Save results
 # ============================================================
@@ -666,12 +808,13 @@ def save_results(valid_servers):
         parents=True,
         exist_ok=True,
     )
+
     BACKUP_FILE.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    # Sort fastest first.
+    # Sort fastest first before writing.
     valid_servers.sort(
         key=lambda item: item["speed_mbps"],
         reverse=True,
@@ -692,7 +835,7 @@ def save_results(valid_servers):
         content,
         encoding="utf-8",
     )
-    
+
     BACKUP_FILE.write_text(
         content,
         encoding="utf-8",
@@ -700,8 +843,11 @@ def save_results(valid_servers):
 
     log(
         f"[INFO] Saved {len(valid_servers)} "
-        f"valid servers to {OUTPUT_FILE}"
+        f"valid servers"
     )
+
+    log(f"[INFO] Latest results: {OUTPUT_FILE}")
+    log(f"[INFO] Daily backup: {BACKUP_FILE}")
 
 
 # ============================================================
@@ -715,6 +861,13 @@ def main():
 
     if shutil.which(CURL) is None:
         log("[ERROR] curl executable not found")
+        sys.exit(1)
+
+    if not SOURCES_FILE.exists():
+        log(
+            f"[ERROR] Sources file not found: "
+            f"{SOURCES_FILE}"
+        )
         sys.exit(1)
 
     servers = collect_servers()
@@ -735,7 +888,10 @@ def main():
     log("Hysteria2 testing completed")
     log(f"Total servers: {len(servers)}")
     log(f"Valid servers: {len(valid_servers)}")
-    log(f"Invalid servers: {len(servers) - len(valid_servers)}")
+    log(
+        f"Invalid servers: "
+        f"{len(servers) - len(valid_servers)}"
+    )
     log("====================================")
 
 
