@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 
 import base64
@@ -17,11 +18,11 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import (
     parse_qs,
+    parse_qsl,
     unquote,
     urlsplit,
     urlunsplit,
 )
-from zoneinfo import ZoneInfo
 
 
 # ============================================================
@@ -46,7 +47,9 @@ BACKUP_FILE = (
 SING_BOX = shutil.which("sing-box") or "sing-box"
 CURL = shutil.which("curl") or "curl"
 
-CONNECTIVITY_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+CONNECTIVITY_URL = (
+    "https://www.cloudflare.com/cdn-cgi/trace"
+)
 
 DOWNLOAD_BYTES = int(
     os.getenv("DOWNLOAD_BYTES", "10000000")
@@ -82,9 +85,6 @@ STARTUP_TIMEOUT = max(
     int(os.getenv("STARTUP_TIMEOUT", "8")),
 )
 
-# Output is URI-only, with speed added to the URI fragment name.
-OUTPUT_FORMAT = "uri"
-
 print_lock = threading.Lock()
 
 
@@ -102,6 +102,7 @@ def log(message):
 # ============================================================
 
 def load_sources():
+
     if not SOURCES_FILE.exists():
         raise FileNotFoundError(
             f"Sources file does not exist: {SOURCES_FILE}"
@@ -127,12 +128,13 @@ def load_sources():
 
         sources.append(line)
 
-    # Deduplicate source URLs while preserving their order.
     return list(dict.fromkeys(sources))
 
 
 def download_source(url):
+
     try:
+
         result = subprocess.run(
             [
                 CURL,
@@ -153,7 +155,7 @@ def download_source(url):
         )
 
         if result.returncode != 0:
-            log(f"[SOURCE ERROR] Failed to download: {url}")
+            log(f"[SOURCE ERROR] Failed: {url}")
             return ""
 
         log(f"[SOURCE OK] {url}")
@@ -161,19 +163,22 @@ def download_source(url):
         return result.stdout.strip()
 
     except subprocess.TimeoutExpired:
-        log(f"[SOURCE ERROR] Download timed out: {url}")
+
+        log(f"[SOURCE ERROR] Timeout: {url}")
         return ""
 
     except Exception as exc:
+
         log(
             f"[SOURCE ERROR] {url}: "
             f"{type(exc).__name__}: {exc}"
         )
+
         return ""
 
 
 # ============================================================
-# Hysteria2 URI extraction and normalization
+# Hysteria2 URI normalization
 # ============================================================
 
 HY2_PATTERN = re.compile(
@@ -181,52 +186,228 @@ HY2_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+COUNTRY_FLAG_PATTERN = re.compile(
+    r"[\U0001F1E6-\U0001F1FF]{2}"
+)
+
 
 def normalize_uri(uri):
+
     uri = uri.strip()
 
-    # Remove trailing punctuation often included in source text.
     uri = uri.rstrip("),.;]}>'\"")
 
-    # Normalize hy2:// to hysteria2://.
     if uri.lower().startswith("hy2://"):
         uri = "hysteria2://" + uri[6:]
 
     return uri
 
 
-def extract_uris(text, max_decode_depth=5):
-    """
-    Extract Hysteria2 URIs from direct or Base64-encoded content.
+# ============================================================
+# Canonical duplicate detection
+# ============================================================
 
-    This supports:
-      - Plain hysteria2:// links
-      - Plain hy2:// links
-      - Base64 subscription content
-      - Mixed direct and encoded content
+def canonical_hysteria2_key(uri):
     """
+    Generate a canonical identity for a Hysteria2 URI.
+
+    Ignores:
+      - Country names
+      - Country flags
+      - Display names
+      - Speed labels
+      - URI fragments
+      - Query parameter ordering
+
+    Preserves:
+      - Hostname
+      - Port
+      - Password
+      - Connection path
+      - SNI
+      - TLS settings
+      - ALPN
+      - Obfuscation settings
+      - Other connection parameters
+    """
+
+    uri = normalize_uri(uri)
+
+    parsed = urlsplit(uri)
+
+    if parsed.scheme.lower() != "hysteria2":
+        raise ValueError("Unsupported URI scheme")
+
+    hostname = parsed.hostname
+
+    if not hostname:
+        raise ValueError("Missing hostname")
+
+    port = parsed.port
+
+    if port is None:
+        raise ValueError("Missing port")
+
+    hostname = hostname.lower().rstrip(".")
+
+    password = unquote(
+        parsed.username or ""
+    )
+
+    aliases = {
+        "sni": "server_name",
+        "servername": "server_name",
+        "server_name": "server_name",
+        "allowinsecure": "insecure",
+        "insecure": "insecure",
+        "obfs_password": "obfs-password",
+        "obfs-password": "obfs-password",
+    }
+
+    query_items = parse_qsl(
+        parsed.query,
+        keep_blank_values=True,
+    )
+
+    normalized_query = []
+
+    for key, value in query_items:
+
+        normalized_key = key.lower()
+
+        normalized_key = aliases.get(
+            normalized_key,
+            normalized_key,
+        )
+
+        if normalized_key == "insecure":
+
+            value = value.lower()
+
+            if value in ("true", "yes"):
+                value = "1"
+
+            elif value in ("false", "no"):
+                value = "0"
+
+        if normalized_key == "alpn":
+
+            value = ",".join(
+                sorted(
+                    item.strip()
+                    for item in value.split(",")
+                    if item.strip()
+                )
+            )
+
+        normalized_query.append(
+            (
+                normalized_key,
+                value,
+            )
+        )
+
+    normalized_query.sort()
+
+    return (
+        "hysteria2",
+        hostname,
+        port,
+        password,
+        parsed.path,
+        tuple(normalized_query),
+    )
+
+
+def deduplicate_hysteria2_uris(uris):
+
+    unique_uris = []
+    seen = set()
+
+    duplicates = 0
+    invalid = 0
+
+    for uri in uris:
+
+        try:
+
+            key = canonical_hysteria2_key(uri)
+
+        except (
+            ValueError,
+            TypeError,
+        ) as exc:
+
+            invalid += 1
+
+            log(
+                f"[DEDUP SKIP] "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+            continue
+
+        if key in seen:
+
+            duplicates += 1
+            continue
+
+        seen.add(key)
+
+        unique_uris.append(
+            normalize_uri(uri)
+        )
+
+    log(
+        f"[DEDUP] Input: {len(uris)} | "
+        f"Unique: {len(unique_uris)} | "
+        f"Duplicates: {duplicates} | "
+        f"Invalid: {invalid}"
+    )
+
+    return unique_uris
+
+
+# ============================================================
+# Recursive URI extraction
+# ============================================================
+
+def extract_uris(
+    text,
+    max_decode_depth=5,
+):
 
     if not text:
         return []
 
     found = []
 
-    # First, collect all directly visible URIs.
     for match in HY2_PATTERN.findall(text):
-        found.append(normalize_uri(match))
 
-    # Avoid infinite recursive decoding.
+        found.append(
+            normalize_uri(match)
+        )
+
     if max_decode_depth <= 0:
-        return list(dict.fromkeys(found))
 
-    compact = re.sub(r"\s+", "", text)
+        return deduplicate_hysteria2_uris(
+            found
+        )
+
+    compact = re.sub(
+        r"\s+",
+        "",
+        text,
+    )
 
     if not compact:
-        return list(dict.fromkeys(found))
 
-    # Attempt Base64 decoding even if direct URIs were found.
-    # This allows mixed direct + encoded source content.
+        return deduplicate_hysteria2_uris(
+            found
+        )
+
     try:
+
         padded = compact + "=" * (
             (-len(compact)) % 4
         )
@@ -240,11 +421,14 @@ def extract_uris(text, max_decode_depth=5):
             errors="ignore",
         )
 
-        # Only recurse when decoding produced meaningful new text.
-        if decoded and decoded.strip() != text.strip():
+        if (
+            decoded
+            and decoded.strip() != text.strip()
+        ):
+
             decoded_uris = extract_uris(
                 decoded,
-                max_decode_depth=max_decode_depth - 1,
+                max_decode_depth - 1,
             )
 
             found.extend(decoded_uris)
@@ -252,11 +436,17 @@ def extract_uris(text, max_decode_depth=5):
     except Exception:
         pass
 
-    # Deduplicate while preserving order.
-    return list(dict.fromkeys(found))
+    return deduplicate_hysteria2_uris(
+        found
+    )
 
+
+# ============================================================
+# Collect servers
+# ============================================================
 
 def collect_servers():
+
     sources = load_sources()
 
     log(f"[INFO] Sources: {len(sources)}")
@@ -264,18 +454,24 @@ def collect_servers():
     all_servers = []
 
     for source in sources:
+
         content = download_source(source)
 
         servers = extract_uris(content)
 
         log(
             f"[INFO] Extracted {len(servers)} "
-            f"Hysteria2 servers"
+            f"Hysteria2 servers from source"
         )
 
         all_servers.extend(servers)
 
-    unique_servers = list(dict.fromkeys(all_servers))
+    # Global duplicate detection across all sources.
+    unique_servers = (
+        deduplicate_hysteria2_uris(
+            all_servers
+        )
+    )
 
     log(
         f"[INFO] Total unique servers: "
@@ -290,6 +486,7 @@ def collect_servers():
 # ============================================================
 
 def parse_hysteria2_uri(uri):
+
     uri = normalize_uri(uri)
 
     parsed = urlsplit(uri)
@@ -298,23 +495,30 @@ def parse_hysteria2_uri(uri):
         raise ValueError("Unsupported URI scheme")
 
     if not parsed.hostname:
-        raise ValueError("Missing server hostname")
+        raise ValueError("Missing hostname")
 
     if parsed.port is None:
-        raise ValueError("Missing server port")
+        raise ValueError("Missing port")
 
-    password = unquote(parsed.username or "")
+    password = unquote(
+        parsed.username or ""
+    )
 
     if not password:
-        raise ValueError("Missing Hysteria2 password")
+        raise ValueError("Missing password")
 
     query = parse_qs(
         parsed.query,
         keep_blank_values=True,
     )
 
-    def get_param(*names, default=None):
+    def get_param(
+        *names,
+        default=None,
+    ):
+
         for name in names:
+
             values = query.get(name)
 
             if values:
@@ -355,13 +559,13 @@ def parse_hysteria2_uri(uri):
     }
 
     if alpn:
+
         config["tls"]["alpn"] = [
             item.strip()
             for item in alpn.split(",")
             if item.strip()
         ]
 
-    # Hysteria2 Salamander obfuscation.
     obfs_type = get_param("obfs")
 
     obfs_password = get_param(
@@ -370,6 +574,7 @@ def parse_hysteria2_uri(uri):
     )
 
     if obfs_type and obfs_password:
+
         config["obfs"] = {
             "type": obfs_type,
             "password": obfs_password,
@@ -383,12 +588,18 @@ def parse_hysteria2_uri(uri):
 # ============================================================
 
 def get_free_port():
+
     with socket.socket(
         socket.AF_INET,
         socket.SOCK_STREAM,
     ) as sock:
 
-        sock.bind(("127.0.0.1", 0))
+        sock.bind(
+            (
+                "127.0.0.1",
+                0,
+            )
+        )
 
         return sock.getsockname()[1]
 
@@ -397,7 +608,11 @@ def get_free_port():
 # sing-box configuration
 # ============================================================
 
-def create_singbox_config(outbound, port):
+def create_singbox_config(
+    outbound,
+    port,
+):
+
     return {
         "log": {
             "level": "error",
@@ -424,11 +639,9 @@ def create_singbox_config(outbound, port):
 
 
 def validate_singbox_config(config_file):
-    """
-    Validate the generated config before starting sing-box.
-    """
 
     try:
+
         result = subprocess.run(
             [
                 SING_BOX,
@@ -455,6 +668,7 @@ def validate_singbox_config(config_file):
         return False
 
     except Exception as exc:
+
         log(
             f"[CONFIG ERROR] "
             f"{type(exc).__name__}: {exc}"
@@ -467,8 +681,15 @@ def validate_singbox_config(config_file):
 # Proxy startup
 # ============================================================
 
-def wait_for_proxy(port, process):
-    deadline = time.monotonic() + STARTUP_TIMEOUT
+def wait_for_proxy(
+    port,
+    process,
+):
+
+    deadline = (
+        time.monotonic()
+        + STARTUP_TIMEOUT
+    )
 
     while time.monotonic() < deadline:
 
@@ -476,13 +697,19 @@ def wait_for_proxy(port, process):
             return False
 
         try:
+
             with socket.create_connection(
-                ("127.0.0.1", port),
+                (
+                    "127.0.0.1",
+                    port,
+                ),
                 timeout=0.5,
             ):
+
                 return True
 
         except OSError:
+
             time.sleep(0.2)
 
     return False
@@ -492,8 +719,15 @@ def wait_for_proxy(port, process):
 # Curl testing
 # ============================================================
 
-def curl_test(port, url, timeout):
-    proxy = f"socks5h://127.0.0.1:{port}"
+def curl_test(
+    port,
+    url,
+    timeout,
+):
+
+    proxy = (
+        f"socks5h://127.0.0.1:{port}"
+    )
 
     command = [
         CURL,
@@ -513,6 +747,7 @@ def curl_test(port, url, timeout):
     ]
 
     try:
+
         result = subprocess.run(
             command,
             capture_output=True,
@@ -529,9 +764,16 @@ def curl_test(port, url, timeout):
             return None
 
         status_code = int(parts[0])
-        speed_bytes_per_second = float(parts[1])
 
-        if status_code < 200 or status_code >= 400:
+        speed_bytes_per_second = float(
+            parts[1]
+        )
+
+        if (
+            status_code < 200
+            or status_code >= 400
+        ):
+
             return None
 
         return speed_bytes_per_second
@@ -548,9 +790,11 @@ def curl_test(port, url, timeout):
 # ============================================================
 
 def test_server(uri):
+
     process = None
 
     try:
+
         outbound = parse_hysteria2_uri(uri)
 
         port = get_free_port()
@@ -565,7 +809,8 @@ def test_server(uri):
         ) as temp_dir:
 
             config_file = (
-                Path(temp_dir) / "config.json"
+                Path(temp_dir)
+                / "config.json"
             )
 
             config_file.write_text(
@@ -577,8 +822,10 @@ def test_server(uri):
                 encoding="utf-8",
             )
 
-            # Validate config before launching sing-box.
-            if not validate_singbox_config(config_file):
+            if not validate_singbox_config(
+                config_file
+            ):
+
                 return None
 
             process = subprocess.Popen(
@@ -592,10 +839,13 @@ def test_server(uri):
                 stderr=subprocess.DEVNULL,
             )
 
-            if not wait_for_proxy(port, process):
+            if not wait_for_proxy(
+                port,
+                process,
+            ):
+
                 return None
 
-            # First check internet connectivity.
             connectivity = curl_test(
                 port,
                 CONNECTIVITY_URL,
@@ -605,7 +855,6 @@ def test_server(uri):
             if connectivity is None:
                 return None
 
-            # Then measure download speed.
             speed_bytes_per_second = curl_test(
                 port,
                 DOWNLOAD_URL,
@@ -615,9 +864,10 @@ def test_server(uri):
             if speed_bytes_per_second is None:
                 return None
 
-            # Convert bytes/sec to megabits/sec.
             speed_mbps = (
-                speed_bytes_per_second * 8 / 1_000_000
+                speed_bytes_per_second
+                * 8
+                / 1_000_000
             )
 
             if speed_mbps < MIN_SPEED:
@@ -629,6 +879,7 @@ def test_server(uri):
             }
 
     except Exception as exc:
+
         log(
             f"[ERROR] Server test failed: "
             f"{type(exc).__name__}: {exc}"
@@ -637,15 +888,18 @@ def test_server(uri):
         return None
 
     finally:
+
         if process is not None:
 
             if process.poll() is None:
                 process.terminate()
 
             try:
+
                 process.wait(timeout=3)
 
             except subprocess.TimeoutExpired:
+
                 process.kill()
                 process.wait()
 
@@ -655,6 +909,7 @@ def test_server(uri):
 # ============================================================
 
 def test_servers(servers):
+
     valid_servers = []
 
     total = len(servers)
@@ -669,7 +924,10 @@ def test_servers(servers):
     ) as executor:
 
         futures = {
-            executor.submit(test_server, server): server
+            executor.submit(
+                test_server,
+                server,
+            ): server
             for server in servers
         }
 
@@ -682,16 +940,20 @@ def test_servers(servers):
             completed += 1
 
             try:
+
                 result = future.result()
 
             except Exception as exc:
+
                 log(
                     f"[ERROR] Worker failed: "
                     f"{type(exc).__name__}: {exc}"
                 )
+
                 result = None
 
             if result is not None:
+
                 valid_servers.append(result)
 
                 log(
@@ -701,12 +963,12 @@ def test_servers(servers):
                 )
 
             else:
+
                 log(
                     f"[{completed}/{total}] "
                     f"[INVALID]"
                 )
 
-    # Fastest server first.
     valid_servers.sort(
         key=lambda item: item["speed_mbps"],
         reverse=True,
@@ -716,87 +978,131 @@ def test_servers(servers):
 
 
 # ============================================================
-# Format URI name with speed
+# Format URI name: country flag + speed only
 # ============================================================
 
-def format_server_uri(uri, speed_mbps):
+def format_server_uri(
+    uri,
+    speed_mbps,
+):
     """
-    Add measured speed in MB/s after the country flag.
+    Output format:
 
-    Example:
-        🇩🇪 Germany
-        ->
-        🇩🇪 10.65 MB/s Germany
+        hysteria2://...#🇩🇪 12.50 MB/s
 
-    Existing speed labels are removed first, so reruns
-    do not add duplicate labels.
+    All extra names and descriptions are removed.
     """
 
     uri = normalize_uri(uri)
 
     parts = urlsplit(uri)
 
-    # Convert Mbps to MB/s.
-    speed_mb = speed_mbps / 8
-
-    speed_label = f"{speed_mb:.2f} MB/s"
-
-    name = unquote(parts.fragment).strip()
-
-    # Remove old MB/s labels anywhere in the name.
-    name = re.sub(
-        r"\s*\d+(?:\.\d+)?\s*MB/s",
-        "",
-        name,
-        flags=re.IGNORECASE,
-    )
-
-    # Clean up duplicate spaces and separators.
-    name = re.sub(
-        r"\s*\|\s*\|?\s*",
-        " ",
-        name,
-    )
-
-    name = re.sub(
-        r"\s{2,}",
-        " ",
-        name,
+    original_name = unquote(
+        parts.fragment
     ).strip()
 
-    # Match a two-character country flag at the beginning.
-    flag_pattern = re.compile(
-        r"^(\s*[\U0001F1E6-\U0001F1FF]{2})"
+    # Extract the first country flag.
+    flag_match = COUNTRY_FLAG_PATTERN.search(
+        original_name
     )
 
-    match = flag_pattern.match(name)
+    if flag_match:
 
-    if match:
-        flag = match.group(1)
-        remaining_name = name[match.end():].strip()
-
-        name = (
-            f"{flag} {speed_label}"
-            + (
-                f" {remaining_name}"
-                if remaining_name
-                else ""
-            )
-        )
+        country_flag = flag_match.group(0)
 
     else:
-        # If no country flag exists, put speed at the beginning.
-        name = f"{speed_label} {name}".strip()
 
+        country_flag = "🌐"
+
+    # Convert Mbps to MB/s.
+    speed_mb = max(
+        0.0,
+        speed_mbps / 8,
+    )
+
+    speed_label = (
+        f"{speed_mb:.2f} MB/s"
+    )
+
+    # Clean name: ONLY flag and speed.
+    clean_name = (
+        f"{country_flag} {speed_label}"
+    )
+
+    # Preserve connection parameters.
     return urlunsplit(
         (
             parts.scheme,
             parts.netloc,
             parts.path,
             parts.query,
-            name,
+            clean_name,
         )
     )
+
+
+# ============================================================
+# Atomic file writing
+# ============================================================
+
+def write_file_atomic(
+    file_path,
+    content,
+):
+    """
+    Write a file using a temporary file and atomic replacement.
+    """
+
+    file_path = Path(file_path)
+
+    file_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    temp_file = None
+
+    try:
+
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=file_path.parent,
+            prefix=f".{file_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as file:
+
+            temp_file = Path(file.name)
+
+            file.write(content)
+
+            file.flush()
+
+            os.fsync(file.fileno())
+
+        os.replace(
+            temp_file,
+            file_path,
+        )
+
+        temp_file = None
+
+    finally:
+
+        if (
+            temp_file is not None
+            and temp_file.exists()
+        ):
+
+            try:
+
+                temp_file.unlink()
+
+            except OSError:
+
+                pass
 
 
 # ============================================================
@@ -804,6 +1110,70 @@ def format_server_uri(uri, speed_mbps):
 # ============================================================
 
 def save_results(valid_servers):
+    """
+    Save unique servers, sorted by speed.
+
+    Latest:
+        results/hysteria2.txt
+
+    Backup:
+        results/YYYY/MM/DD.txt
+    """
+
+    # Sort fastest first.
+    valid_servers.sort(
+        key=lambda item: item["speed_mbps"],
+        reverse=True,
+    )
+
+    # Final deduplication before saving.
+    # Since the list is sorted, the fastest duplicate
+    # configuration is preserved.
+    unique_servers = []
+
+    seen = set()
+
+    for server in valid_servers:
+
+        uri = server["uri"]
+
+        try:
+
+            key = canonical_hysteria2_key(
+                uri
+            )
+
+        except (
+            ValueError,
+            TypeError,
+        ):
+
+            key = normalize_uri(uri)
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        unique_servers.append(server)
+
+    # Format output.
+    output_lines = [
+
+        format_server_uri(
+            server["uri"],
+            server["speed_mbps"],
+        )
+
+        for server in unique_servers
+    ]
+
+    content = "\n".join(output_lines)
+
+    if content:
+        content += "\n"
+
+    # Ensure directories exist.
     OUTPUT_FILE.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -814,40 +1184,35 @@ def save_results(valid_servers):
         exist_ok=True,
     )
 
-    # Sort fastest first before writing.
-    valid_servers.sort(
-        key=lambda item: item["speed_mbps"],
-        reverse=True,
-    )
-
-    content = "\n".join(
-        format_server_uri(
-            server["uri"],
-            server["speed_mbps"],
-        )
-        for server in valid_servers
-    )
-
-    if content:
-        content += "\n"
-
-    OUTPUT_FILE.write_text(
+    # Save latest output.
+    write_file_atomic(
+        OUTPUT_FILE,
         content,
-        encoding="utf-8",
     )
 
-    BACKUP_FILE.write_text(
+    # Save daily backup.
+    write_file_atomic(
+        BACKUP_FILE,
         content,
-        encoding="utf-8",
     )
 
     log(
-        f"[INFO] Saved {len(valid_servers)} "
-        f"valid servers"
+        f"[INFO] Saved {len(unique_servers)} "
+        f"unique valid servers"
     )
 
-    log(f"[INFO] Latest results: {OUTPUT_FILE}")
-    log(f"[INFO] Daily backup: {BACKUP_FILE}")
+    log(
+        f"[INFO] Latest results: {OUTPUT_FILE}"
+    )
+
+    log(
+        f"[INFO] Daily backup: {BACKUP_FILE}"
+    )
+
+    log(
+        f"[INFO] Output size: "
+        f"{len(content.encode('utf-8')):,} bytes"
+    )
 
 
 # ============================================================
@@ -855,45 +1220,83 @@ def save_results(valid_servers):
 # ============================================================
 
 def main():
+
     if shutil.which(SING_BOX) is None:
-        log("[ERROR] sing-box executable not found")
+
+        log(
+            "[ERROR] sing-box executable not found"
+        )
+
         sys.exit(1)
 
     if shutil.which(CURL) is None:
-        log("[ERROR] curl executable not found")
+
+        log(
+            "[ERROR] curl executable not found"
+        )
+
         sys.exit(1)
 
     if not SOURCES_FILE.exists():
+
         log(
             f"[ERROR] Sources file not found: "
             f"{SOURCES_FILE}"
         )
+
         sys.exit(1)
 
+    # Collect and deduplicate servers.
     servers = collect_servers()
 
     if not servers:
-        log("[WARNING] No Hysteria2 servers found")
+
+        log(
+            "[WARNING] No Hysteria2 servers found"
+        )
 
         save_results([])
 
         return
 
-    valid_servers = test_servers(servers)
+    # Test unique servers.
+    valid_servers = test_servers(
+        servers
+    )
 
-    save_results(valid_servers)
+    # Save clean output and backup.
+    save_results(
+        valid_servers
+    )
 
     log("")
-    log("====================================")
-    log("Hysteria2 testing completed")
-    log(f"Total servers: {len(servers)}")
-    log(f"Valid servers: {len(valid_servers)}")
+
+    log(
+        "===================================="
+    )
+
+    log(
+        "Hysteria2 testing completed"
+    )
+
+    log(
+        f"Total unique servers: {len(servers)}"
+    )
+
+    log(
+        f"Valid servers: {len(valid_servers)}"
+    )
+
     log(
         f"Invalid servers: "
         f"{len(servers) - len(valid_servers)}"
     )
-    log("====================================")
+
+    log(
+        "===================================="
+    )
 
 
 if __name__ == "__main__":
+
     main()
