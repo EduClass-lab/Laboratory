@@ -126,7 +126,5 @@ jobs:
       - name: Commit Results
         uses: stefanzweifel/git-auto-commit-action@v6
         with:
-          commit_message: "Update tested Hysteria2 servers - ${{ github.run_id }} - $(date +'%Y-%m-%d')"
-          file_pattern: |
-            results/hysteria2.txt
-            results/**/*.txt
+          commit_message: "Update tested Hysteria2 servers - ${{ github.run_id }}"
+          file_pattern: results/**
