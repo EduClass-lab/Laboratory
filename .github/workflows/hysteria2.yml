@@ -18,7 +18,7 @@ jobs:
   collect-test-sort:
     name: Collect and Test Hysteria2
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
 
     steps:
       - name: Checkout Repository
@@ -76,7 +76,7 @@ jobs:
           MAX_WORKERS: "10"
           CONNECT_TIMEOUT: "15"
           DOWNLOAD_TIMEOUT: "35"
-          MIN_SPEED: "0"
+          MIN_SPEED: "10"
         run: |
           python scripts/hysteria2_tester.py
 
