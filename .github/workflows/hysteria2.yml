@@ -1,0 +1,104 @@
+
+name: Hysteria2 Collector and Speed Tester
+
+on:
+  workflow_dispatch:
+
+ # schedule:
+ # - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hysteria2-collector
+  cancel-in-progress: false
+
+jobs:
+  collect-test-sort:
+    name: Collect and Test Hysteria2
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq
+
+      - name: Install Latest sing-box
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Fetching latest stable sing-box release..."
+
+          RELEASE_JSON=$(curl -fsSL \
+            https://api.github.com/repos/SagerNet/sing-box/releases/latest)
+
+          DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '
+            .assets[]
+            | select(.name | test("linux-amd64\\.tar\\.gz$"))
+            | .browser_download_url
+          ' | head -n 1)
+
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+            echo "Could not find sing-box Linux AMD64 release."
+            exit 1
+          fi
+
+          echo "Downloading: $DOWNLOAD_URL"
+
+          curl -fsSL "$DOWNLOAD_URL" -o sing-box.tar.gz
+
+          mkdir -p sing-box-extract
+
+          tar -xzf sing-box.tar.gz \
+            -C sing-box-extract \
+            --strip-components=1
+
+          sudo install \
+            sing-box-extract/sing-box \
+            /usr/local/bin/sing-box
+
+          sing-box version
+
+      - name: Collect, Test and Sort Hysteria2 Servers
+        env:
+          MAX_WORKERS: "10"
+          CONNECT_TIMEOUT: "15"
+          DOWNLOAD_TIMEOUT: "35"
+          MIN_SPEED: "0"
+        run: |
+          python scripts/hysteria2_tester.py
+
+      - name: Show Results
+        run: |
+          echo "=================================="
+          echo "Hysteria2 Results"
+          echo "=================================="
+
+          if [ -f results/hysteria2.txt ]; then
+            echo "Valid servers:"
+            wc -l results/hysteria2.txt
+
+            echo ""
+            echo "First 10 servers:"
+            head -n 10 results/hysteria2.txt
+          else
+            echo "No result file found."
+          fi
+
+      - name: Commit Results
+        uses: stefanzweifel/git-auto-commit-action@v6
+        with:
+          commit_message: "Update tested Hysteria2 servers"
+          file_pattern: results/hysteria2.txt
