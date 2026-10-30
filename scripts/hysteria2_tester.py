@@ -27,7 +27,8 @@ now = datetime.now()
 ROOT = Path(__file__).resolve().parent.parent
 
 SOURCES_FILE = ROOT / "sources.txt"
-OUTPUT_FILE = (
+OUTPUT_FILE = ROOT / "results" / "hysteria2.txt"
+BACKUP_FILE = (
     ROOT
     / "results"
     / now.strftime("%Y")
@@ -665,6 +666,10 @@ def save_results(valid_servers):
         parents=True,
         exist_ok=True,
     )
+    BACKUP_FILE.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     # Sort fastest first.
     valid_servers.sort(
@@ -684,6 +689,11 @@ def save_results(valid_servers):
         content += "\n"
 
     OUTPUT_FILE.write_text(
+        content,
+        encoding="utf-8",
+    )
+    
+    BACKUP_FILE.write_text(
         content,
         encoding="utf-8",
     )
