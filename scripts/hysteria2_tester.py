@@ -16,7 +16,9 @@ import time
 
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
-
+from urllib.parse import urlsplit, urlunsplit
+from datetime import datetime
+now = datetime.now()
 
 # ============================================================
 # Configuration
@@ -25,7 +27,13 @@ from urllib.parse import parse_qs, unquote, urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 
 SOURCES_FILE = ROOT / "sources.txt"
-OUTPUT_FILE = ROOT / "results" / "hysteria2.txt"
+OUTPUT_FILE = (
+    ROOT
+    / "results"
+    / now.strftime("%Y")
+    / now.strftime("%m")
+    / f"{now.strftime('%d')}.txt"
+)
 
 SING_BOX = shutil.which("sing-box") or "sing-box"
 CURL = shutil.which("curl") or "curl"
@@ -579,6 +587,75 @@ def test_servers(servers):
     return valid_servers
 
 
+def format_server_uri(uri, speed_mbps):
+    """
+    Add measured download speed in MB/s after the country flag
+    in the server name.
+
+    Example:
+        🇩🇪 Germany
+        ->
+        🇩🇪 10.65 MB/s Germany
+    """
+
+    parts = urlsplit(uri)
+
+    # Convert Mbps to MB/s.
+    speed_mb = speed_mbps / 8
+
+    speed_label = f"{speed_mb:.2f} MB/s"
+
+    name = unquote(parts.fragment)
+
+    # Remove previously added speed labels to prevent duplication.
+    name = re.sub(
+        r"\s*\|\s*\d+(?:\.\d+)?\s*MB/s",
+        "",
+        name,
+        flags=re.IGNORECASE,
+    )
+
+    name = re.sub(
+        r"^\s*\d+(?:\.\d+)?\s*MB/s\s*",
+        "",
+        name,
+        flags=re.IGNORECASE,
+    )
+
+    # Insert speed immediately after the country flag.
+    flag_pattern = re.compile(
+        r"^(\s*[\U0001F1E6-\U0001F1FF]{2})"
+    )
+
+    match = flag_pattern.match(name)
+
+    if match:
+        flag = match.group(1)
+        remaining_name = name[match.end():].strip()
+
+        name = (
+            f"{flag} {speed_label}"
+            + (
+                f" {remaining_name}"
+                if remaining_name
+                else ""
+            )
+        )
+
+    else:
+        # If no country flag exists, prepend the speed.
+        name = f"{speed_label} {name}".strip()
+
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            parts.query,
+            name,
+        )
+    )
+    
 # ============================================================
 # Save results
 # ============================================================
@@ -589,8 +666,17 @@ def save_results(valid_servers):
         exist_ok=True,
     )
 
+    # Sort fastest first.
+    valid_servers.sort(
+        key=lambda item: item["speed_mbps"],
+        reverse=True,
+    )
+
     content = "\n".join(
-        server["uri"]
+        format_server_uri(
+            server["uri"],
+            server["speed_mbps"],
+        )
         for server in valid_servers
     )
 
