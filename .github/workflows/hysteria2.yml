@@ -101,4 +101,6 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v6
         with:
           commit_message: "Update tested Hysteria2 servers - $(date +'%Y-%m-%d')"
-          file_pattern: results/**/*.txt
+          file_pattern: |
+            results/hysteria2.txt
+            results/**/*.txt
