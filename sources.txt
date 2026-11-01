@@ -23,3 +23,10 @@ https://raw.githubusercontent.com/rtwo2/FastNodes/refs/heads/main/sub/protocols/
 https://raw.githubusercontent.com/rtwo2/FastNodes/refs/heads/main/sub/protocols/hysteria2_part3.txt
 https://raw.githubusercontent.com/rtwo2/FastNodes/refs/heads/main/sub/protocols/hysteria2_part4.txt
 https://raw.githubusercontent.com/rtwo2/FastNodes/refs/heads/main/sub/protocols/hysteria2_part5.txt
+https://raw.githubusercontent.com/Subzio/subzio/main/HYSTERIA2.txt
+https://raw.githubusercontent.com/svinakraft-maker/FlareFeed/main/public/hysteria2.txt
+https://raw.githubusercontent.com/pie-with-jam/PulseProxy/main/githubmirror/20.txt
+https://raw.githubusercontent.com/Agumuzi/crhopper/main/CR-Hopper.txt
+https://raw.githubusercontent.com/alireza786786/Free-V2ray-Configs/main/all_servers.txt
+https://raw.githubusercontent.com/LeilaoMi/AutoMergePublicNodes-Optimized/main/output/by_protocol/global_hysteria2.txt
+
