@@ -27,7 +27,7 @@ jobs:
 
       - name: Collect, Test and Sort sources
         run: |
-          pip install request 
+          pip install requests
           python scripts/sources.py
 
       - name: Commit & push  changes
