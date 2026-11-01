@@ -1,0 +1,66 @@
+
+name: sources Collector
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sources-collector
+  cancel-in-progress: false
+
+jobs:
+  collect-test-sort:
+    name: Collect and Test sources
+    runs-on: ubuntu-26.04
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup Python
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.15.2"
+
+      - name: Collect, Test and Sort sources
+        run: |
+          python scripts/sources.py
+
+      
+
+      - name: Commit & push  changes
+        continue-on-error: true
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          
+          # 1. Get latest from remote
+          echo "🔄 Pulling latest changes..."
+          git pull origin dev-01 || {
+            echo "⚠️  Pull failed, trying with rebase..."
+            git pull origin dev-01 --rebase
+          }
+          
+          # 2. Check if previous step made any changes
+          echo "📊 Checking for changes..."
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "✅ No changes detected - nothing to commit"
+            exit 0
+          fi
+          
+          # 3. Show what changed
+          echo "📝 Changes detected:"
+          git status --porcelain
+          
+          # 4. Stage and commit
+          echo "💾 Committing changes..."
+          git add -A
+          git commit -m "Sources Archived - $(TZ='Asia/Tehran' date '+%Y-%m-%d %H:%M:%S') 🌿"
+          
+          # 5. Push
+          echo "🚀 Pushing to GitHub..."
+          git push origin dev-01
+          echo "✅ Done!"
