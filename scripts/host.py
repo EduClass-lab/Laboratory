@@ -1,4 +1,5 @@
 import re
+import math
 import time
 import random
 import logging
@@ -115,9 +116,24 @@ def check_ping_result(request_id, max_attempts=12, poll_interval=1.5):
     return {}
 
 
+def compute_min_nodes(min_iran_ok_ratio: float, total_iran_nodes: int) -> int:
+    """
+    Convert ratio -> required minimum number of responding Iranian nodes.
+      ratio >= 1.0  -> all nodes
+      ratio <= 0    -> 1 node (any response)
+      otherwise     -> ceil(ratio * total_nodes), at least 1
+    """
+    if min_iran_ok_ratio >= 1.0:
+        return total_iran_nodes
+    if min_iran_ok_ratio <= 0.0:
+        return 1
+    required = math.ceil(min_iran_ok_ratio * total_iran_nodes)
+    return max(1, min(required, total_iran_nodes))
+
+
 def main(input_file="results/hysteria2.txt",
          output_file="results/working_hysteria_servers.txt",
-         min_iran_ok_ratio=0.5,
+         min_iran_ok_ratio=1.0,
          submit_delay=4.0,
          submit_retry_max=6,
          poll_workers=10):
@@ -138,10 +154,17 @@ def main(input_file="results/hysteria2.txt",
         logger.error("No Iranian nodes. Exiting.")
         return
 
-    # Group all lines by host. Keep every line for output.
-    # { host: [line1, line2, ...] }
+    total_iran_nodes = len(iran_nodes)
+    min_required = compute_min_nodes(min_iran_ok_ratio, total_iran_nodes)
+    logger.info(
+        f"Policy: min_iran_ok_ratio={min_iran_ok_ratio} -> "
+        f"require at least {min_required}/{total_iran_nodes} Iranian nodes "
+        f"to respond per host."
+    )
+
+    # Group all lines by host (keep every config line for output)
     host_to_lines = {}
-    host_order = []          # preserve first-seen order
+    host_order = []
     for idx, line in enumerate(lines):
         host = extract_host_from_line(line)
         if not host:
@@ -159,12 +182,12 @@ def main(input_file="results/hysteria2.txt",
         f"(from {len(lines)} input lines)"
     )
 
-    # Stage 1: submit once per unique host
+    # Stage 1: submit (one per unique host)
     logger.info(
         f"Stage 1: Submitting {len(unique_hosts)} unique hosts sequentially "
         f"(delay={submit_delay}s, retries={submit_retry_max}) ..."
     )
-    submitted = []          # list of (host, request_id)
+    submitted = []
     for i, host in enumerate(unique_hosts, 1):
         logger.info(f"  [{i}/{len(unique_hosts)}] Submitting {host} ...")
         req_id = check_host_submit(host, iran_nodes, max_retries=submit_retry_max)
@@ -180,7 +203,7 @@ def main(input_file="results/hysteria2.txt",
         logger.error("Nothing submitted. Exiting.")
         return
 
-    # Stage 2: poll results
+    # Stage 2: poll
     logger.info(
         f"Stage 2: Collecting {len(submitted)} results "
         f"with {poll_workers} workers ..."
@@ -189,44 +212,44 @@ def main(input_file="results/hysteria2.txt",
     def _collect(job):
         host, req_id = job
         pings = check_ping_result(req_id)
-        return {"host": host, "pings": pings, "ok": bool(pings)}
+        return {"host": host, "pings": pings}
 
-    host_results = {}       # host -> {"pings", "ok"}
+    host_results = {}
     with ThreadPoolExecutor(max_workers=poll_workers) as pool:
         futures = [pool.submit(_collect, job) for job in submitted]
         for fut in as_completed(futures):
             try:
                 r = fut.result()
                 host_results[r["host"]] = r
+                n = len(r["pings"])
+                meets = n >= min_required
                 logger.info(
-                    f"  {r['host']} -> "
-                    f"{'OK' if r['ok'] else 'FAIL'} "
-                    f"({len(r['pings'])} nodes)"
+                    f"  {r['host']} -> {n}/{total_iran_nodes} nodes "
+                    f"({'PASS' if meets else 'FAIL'} vs required {min_required})"
                 )
             except Exception as e:
                 logger.error(f"collect error: {e}")
 
-    # Evaluate: ratio is per-unique-host
+    # Select hosts that meet the per-host node requirement
+    selected_hosts = [
+        h for h, r in host_results.items()
+        if len(r["pings"]) >= min_required
+    ]
     total = len(host_results)
-    working_hosts = [h for h, r in host_results.items() if r["ok"]]
-    ratio = len(working_hosts) / total if total else 0
     logger.info(
-        f"Result: {len(working_hosts)}/{total} unique hosts responded "
-        f"(ratio={ratio:.0%}, threshold={min_iran_ok_ratio:.0%})"
+        f"Selection: {len(selected_hosts)}/{total} unique hosts "
+        f"have at least {min_required}/{total_iran_nodes} nodes responding."
     )
 
-    if ratio < min_iran_ok_ratio:
-        logger.error(
-            f"Threshold not met ({ratio:.0%} < {min_iran_ok_ratio:.0%}). "
-            f"No file saved."
-        )
+    if not selected_hosts:
+        logger.error("No hosts matched the criteria. No file saved.")
         return
 
-    # Expand back: write ALL original lines whose host is working
-    working_set = set(working_hosts)
+    # Expand back: write ALL original lines for selected hosts
+    selected_set = set(selected_hosts)
     output_lines = []
     for host in host_order:
-        if host in working_set:
+        if host in selected_set:
             output_lines.extend(host_to_lines[host])
 
     with output_path.open("w", encoding="utf-8") as f:
@@ -235,7 +258,7 @@ def main(input_file="results/hysteria2.txt",
 
     logger.info(
         f"Saved {len(output_lines)} config lines "
-        f"({len(working_hosts)} unique working hosts) to '{output_path}'"
+        f"({len(selected_hosts)} unique hosts) to '{output_path}'"
     )
 
 
@@ -243,7 +266,7 @@ if __name__ == "__main__":
     main(
         input_file="results/hysteria2.txt",
         output_file="results/working_hysteria_servers.txt",
-        min_iran_ok_ratio=1,
+        min_iran_ok_ratio=1.0,   # 1.0 -> all 8 nodes; 0.5 -> at least 4; 0.0 -> at least 1
         submit_delay=4.0,
         submit_retry_max=6,
         poll_workers=10,
