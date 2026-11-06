@@ -38,6 +38,7 @@ jobs:
       - name: Collect, Test and Sort Hysteria2 Servers
 
         run: |
+          pip install requests
           python scripts/host.py
 
 
