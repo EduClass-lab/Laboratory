@@ -1,9 +1,11 @@
 import re
+import json
 import time
 import random
 import logging
 from time import sleep
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
@@ -49,7 +51,6 @@ def extract_host_from_line(line: str):
 
 
 def check_host_submit(host, iran_nodes, max_retries=6):
-    """Submit a ping request. Returns request_id or None."""
     url = "https://check-host.net/check-ping"
     params = {"host": host, "node": iran_nodes}
     for attempt in range(max_retries):
@@ -78,7 +79,6 @@ def check_host_submit(host, iran_nodes, max_retries=6):
 
 
 def check_ping_result(request_id, max_attempts=12, poll_interval=1.5):
-    """Poll result. Returns dict {node: avg_ms}."""
     if not request_id:
         return {}
     url = f"https://check-host.net/check-result/{request_id}"
@@ -116,12 +116,36 @@ def check_ping_result(request_id, max_attempts=12, poll_interval=1.5):
     return {}
 
 
+def load_progress(progress_path: Path):
+    """Load already-processed records from JSONL (for resume)."""
+    done = {}
+    if not progress_path.is_file():
+        return done
+    with progress_path.open("r", encoding="utf-8") as f:
+        for ln in f:
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                rec = json.loads(ln)
+                done[rec["host"]] = rec
+            except Exception:
+                continue
+    return done
+
+
+def append_progress(progress_path: Path, rec: dict):
+    with progress_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
 def main(input_file="results/hysteria2.txt",
          output_file="results/working_hysteria_servers.txt",
          min_iran_ok_ratio=0.5,
          submit_delay=4.0,
          submit_retry_max=6,
-         poll_workers=10):
+         poll_workers=10,
+         resume=True):
     input_path = Path(input_file)
     output_path = Path(output_file)
 
@@ -130,6 +154,7 @@ def main(input_file="results/hysteria2.txt",
         return
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    progress_path = output_path.parent / (output_path.name + ".progress.jsonl")
 
     lines = [ln for ln in input_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     logger.info(f"Read {len(lines)} lines")
@@ -139,73 +164,95 @@ def main(input_file="results/hysteria2.txt",
         logger.error("No Iranian nodes. Exiting.")
         return
 
-    # Parse hosts
+    # Parse + dedup
     parsed = []
+    seen = set()
     for idx, line in enumerate(lines):
         host = extract_host_from_line(line)
         if not host:
             logger.warning(f"[{idx}] parse failed: {line[:60]}...")
             continue
+        if host in seen:
+            logger.info(f"[{idx}] duplicate host skipped: {host}")
+            continue
+        seen.add(host)
         parsed.append((idx, line, host))
 
-    logger.info(f"Parsed {len(parsed)} valid hosts")
+    logger.info(f"Parsed {len(parsed)} unique valid hosts (from {len(lines)} lines)")
 
-    # Stage 1: Sequential submit (with per-request delay + retry-on-429)
-    logger.info(f"Stage 1: Submitting {len(parsed)} requests sequentially "
-                f"(delay={submit_delay}s, retries={submit_retry_max}) ...")
+    # Load prior progress (resume)
+    prior = load_progress(progress_path) if resume else {}
+    if prior:
+        logger.info(f"Resume: found {len(prior)} previously completed hosts")
+    pending = [(idx, line, host) for idx, line, host in parsed if host not in prior]
+    logger.info(f"Pending hosts to process: {len(pending)}")
+
+    # Stage 1: sequential submit
+    logger.info(
+        f"Stage 1: Submitting {len(pending)} requests sequentially "
+        f"(delay={submit_delay}s, retries={submit_retry_max}) ..."
+    )
     submitted = []
-    for i, (idx, line, host) in enumerate(parsed, 1):
-        logger.info(f"  [{i}/{len(parsed)}] Submitting {host} ...")
+    for i, (idx, line, host) in enumerate(pending, 1):
+        logger.info(f"  [{i}/{len(pending)}] Submitting {host} ...")
         req_id = check_host_submit(host, iran_nodes, max_retries=submit_retry_max)
         if req_id:
             submitted.append((idx, line, host, req_id))
             logger.info(f"    -> request_id={req_id}")
         else:
             logger.warning(f"    -> failed to submit")
+            rec = {
+                "idx": idx, "line": line, "host": host, "ok": False,
+                "pings": {}, "reason": "submit_failed"
+            }
+            append_progress(progress_path, rec)
+            prior[host] = rec
         time.sleep(submit_delay)
 
-    logger.info(f"Stage 1 done: {len(submitted)}/{len(parsed)} submitted")
+    logger.info(f"Stage 1 done: {len(submitted)}/{len(pending)} submitted")
     if not submitted:
-        logger.error("No requests submitted. Exiting.")
-        return
+        logger.info("Nothing new submitted. Building output from existing progress.")
+    else:
+        # Stage 2: parallel poll
+        logger.info(
+            f"Stage 2: Collecting {len(submitted)} results "
+            f"with {poll_workers} workers ..."
+        )
 
-    # Stage 2: Collect results in parallel
-    logger.info(f"Stage 2: Collecting {len(submitted)} results "
-                f"with {poll_workers} workers ...")
+        def _collect(job):
+            idx, line, host, req_id = job
+            pings = check_ping_result(req_id)
+            rec = {
+                "idx": idx, "line": line, "host": host,
+                "ok": bool(pings),
+                "pings": {k: round(v, 2) for k, v in pings.items()},
+            }
+            append_progress(progress_path, rec)
+            return rec
 
-    import concurrent.futures as cf
+        with ThreadPoolExecutor(max_workers=poll_workers) as pool:
+            futures = [pool.submit(_collect, job) for job in submitted]
+            for fut in as_completed(futures):
+                try:
+                    r = fut.result()
+                    prior[r["host"]] = r
+                    logger.info(
+                        f"  [{r['idx']}] {r['host']} -> "
+                        f"{'OK' if r['ok'] else 'FAIL'} "
+                        f"({len(r['pings'])} nodes)"
+                    )
+                except Exception as e:
+                    logger.error(f"collect error: {e}")
 
-    def _collect(job):
-        idx, line, host, req_id = job
-        pings = check_ping_result(req_id)
-        return {
-            "idx": idx, "line": line, "host": host,
-            "pings": pings, "ok": bool(pings),
-        }
-
-    results = []
-    with cf.ThreadPoolExecutor(max_workers=poll_workers) as pool:
-        futures = [pool.submit(_collect, job) for job in submitted]
-        for fut in cf.as_completed(futures):
-            try:
-                r = fut.result()
-                results.append(r)
-                logger.info(
-                    f"  [{r['idx']}] {r['host']} -> "
-                    f"{'OK' if r['ok'] else 'FAIL'} "
-                    f"({len(r['pings'])} nodes)"
-                )
-            except Exception as e:
-                logger.error(f"collect error: {e}")
-
-    results.sort(key=lambda x: x["idx"])
-
-    # Evaluate condition
+    # Aggregate
+    results = sorted(prior.values(), key=lambda x: x["idx"])
     total = len(results)
-    working = [r for r in results if r["ok"]]
+    working = [r for r in results if r.get("ok")]
     ratio = len(working) / total if total else 0
-    logger.info(f"Result: {len(working)}/{total} servers responded "
-                f"(ratio={ratio:.0%}, threshold={min_iran_ok_ratio:.0%})")
+    logger.info(
+        f"Result: {len(working)}/{total} servers responded "
+        f"(ratio={ratio:.0%}, threshold={min_iran_ok_ratio:.0%})"
+    )
 
     if ratio < min_iran_ok_ratio:
         logger.error(
@@ -222,15 +269,21 @@ def main(input_file="results/hysteria2.txt",
     report_path = output_path.parent / (output_path.name + ".report.txt")
     with report_path.open("w", encoding="utf-8") as f:
         for r in results:
-            status = "OK  " if r["ok"] else "FAIL"
-            if r["pings"]:
-                avg = sum(r["pings"].values()) / len(r["pings"])
-                best = min(r["pings"].values())
-                f.write(f"[{status}] {r['host']:45s} "
-                        f"nodes={len(r['pings'])} avg={avg:7.1f}ms best={best:7.1f}ms\n")
+            status = "OK  " if r.get("ok") else "FAIL"
+            pings = r.get("pings") or {}
+            if pings:
+                vals = list(pings.values())
+                avg = sum(vals) / len(vals)
+                best = min(vals)
+                f.write(
+                    f"[{status}] {r['host']:45s} "
+                    f"nodes={len(pings)} avg={avg:7.1f}ms best={best:7.1f}ms\n"
+                )
             else:
-                f.write(f"[{status}] {r['host']:45s} no response\n")
+                reason = r.get("reason", "no_response")
+                f.write(f"[{status}] {r['host']:45s} {reason}\n")
     logger.info(f"Report written to '{report_path}'")
+    logger.info(f"Progress log: '{progress_path}'")
 
 
 if __name__ == "__main__":
@@ -241,4 +294,5 @@ if __name__ == "__main__":
         submit_delay=4.0,
         submit_retry_max=6,
         poll_workers=10,
+        resume=True,
     )
