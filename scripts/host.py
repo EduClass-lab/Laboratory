@@ -243,7 +243,7 @@ if __name__ == "__main__":
     main(
         input_file="results/hysteria2.txt",
         output_file="results/working_hysteria_servers.txt",
-        min_iran_ok_ratio=0.5,
+        min_iran_ok_ratio=1,
         submit_delay=4.0,
         submit_retry_max=6,
         poll_workers=10,
