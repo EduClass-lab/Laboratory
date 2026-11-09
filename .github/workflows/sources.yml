@@ -23,7 +23,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v7.1.0
         with:
-          python-version: "3.15.2"
+          python-version: "3.15.x"
 
       - name: Collect, Test and Sort sources
         run: |
