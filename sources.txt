@@ -79,3 +79,4 @@ https://raw.githubusercontent.com/tomjiu/proxy-pipeline/main/dist/online/nodes.t
 https://raw.githubusercontent.com/vit352018/Claude-VPN-Parcer/main/output/MIXED.txt
 https://raw.githubusercontent.com/wlunlocker/vpn-configs/main/blacklist_vpn2.txt
 https://raw.githubusercontent.com/wuzhuohua168/free-grab-node/main/docs/rocket.txt
+https://raw.githubusercontent.com/Airuop/archive/refs/heads/master/update/hysteria2.txt
