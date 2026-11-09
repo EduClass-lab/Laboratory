@@ -20,7 +20,7 @@ from requests.adapters import HTTPAdapter
 # ─────────────────────────────
 
 MIN_SERVERS = 10
-DAYS_REQUIRED = 7
+DAYS_REQUIRED = 3
 
 OUTPUT_TXT = "approved_hysteria2.txt"
 OUTPUT_JSON = "approved_hysteria2.json"
@@ -29,7 +29,7 @@ OUTPUT_TIME = "last_update.txt"
 GITHUB_API = "https://api.github.com"
 RAW_BASE = "https://raw.githubusercontent.com"
 
-MAX_FILE_SIZE = 2 * 1024 * 1024       # 2 MB — subscriptions are tiny
+MAX_FILE_SIZE = 10 * 1024 * 1024       # 2 MB — subscriptions are tiny
 MAX_FILE_WORKERS = 8                   # concurrent file fetches per repo
 MAX_REPO_WORKERS = 6                   # concurrent repo verifications
 
@@ -181,9 +181,9 @@ def search_repositories(query, max_pages=2):
 def discover_repositories():
     """Run several targeted search queries to find candidate repositories."""
     queries = [
-        "hysteria2 in:readme",
-        "hysteria2 in:description",
-        "hysteria2 in:name",
+        "hysteria in:readme",
+        "hysteria in:description",
+        "hysteria in:name",
         "hy2 in:readme",
     ]
 
@@ -353,16 +353,18 @@ def is_candidate(item):
 # Hysteria2 counting
 # ─────────────────────────────
 
+# Matches both hysteria2:// and h2://
+HY2_PATTERN = re.compile(r"(?:hysteria2|h2)://", flags=re.IGNORECASE)
+
 def count_hysteria2(content):
-    """Count Hysteria2 URI occurrences in plain or Base64 text."""
+    """Count Hysteria2 (hysteria2:// and h2://) URI occurrences in plain or
+    Base64 text."""
     if not content:
         return 0
 
     content = content.strip()
 
-    direct_count = len(
-        re.findall(r"hysteria2://", content, flags=re.IGNORECASE)
-    )
+    direct_count = len(HY2_PATTERN.findall(content))
     if direct_count:
         return direct_count
 
@@ -375,12 +377,9 @@ def count_hysteria2(content):
         decoded = base64.b64decode(
             compact + padding, validate=False
         ).decode("utf-8", errors="ignore")
-        return len(
-            re.findall(r"hysteria2://", decoded, flags=re.IGNORECASE)
-        )
+        return len(HY2_PATTERN.findall(decoded))
     except Exception:
         return 0
-
 
 def find_best_file(owner, repo, branch):
     """Find the file with the most Hysteria2 servers (concurrent scan)."""
